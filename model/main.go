@@ -37,13 +37,12 @@ type NameInfo struct {
 	Names map[string]string `maxminddb:"names"`
 }
 
-// GeoCN represents the GeoCN database structure.
+// GeoCN represents the GeoCN database structure (division_code schema).
+// Note: division_code is stored as an unsigned integer in the database.
 type GeoCN struct {
-	Province  string `maxminddb:"province"`
-	City      string `maxminddb:"city"`
-	Districts string `maxminddb:"districts"`
-	ISP       string `maxminddb:"isp"`
-	Net       string `maxminddb:"net"`
+	DivisionCode uint   `maxminddb:"division_code"` // GB/T 2260 code, e.g. 110000 (Beijing), 410105 (Zhengzhou/Jinshui)
+	ISP          string `maxminddb:"isp"`           // 电信/联通/移动/教育网/广电/鹏博士, sometimes empty
+	Type         string `maxminddb:"type"`          // IPv6 records only: 宽带/基站/专线/IDC
 }
 
 type IPInfoResponse struct {

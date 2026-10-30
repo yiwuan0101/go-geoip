@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/sessions"
@@ -22,9 +23,26 @@ import (
 const (
 	cityDBDefaultURL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
 	asnDBURL         = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb"
-	cnDBURL          = "https://github.com/ljxi/GeoCN/releases/download/Latest/GeoCN.mmdb"
+	cnDBURL          = "https://github.com/ljxi/GeoCN/releases/latest/download/GeoCN.mmdb"
 	sessionName      = "session"
 )
+
+// httpClient leaves enough headroom for ~60MB databases while still
+// guarding against a hung upstream.
+var httpClient = &http.Client{Timeout: 10 * time.Minute}
+
+type database struct {
+	filename string
+	url      string
+}
+
+func databases() []database {
+	return []database{
+		{filename: "GeoIP-City.mmdb", url: getCityDBURL()},
+		{filename: "Geo-ASN.mmdb", url: getAsnDBURL()},
+		{filename: "GeoCN.mmdb", url: getCnDBURL()},
+	}
+}
 
 func main() {
 	logger.SetupLogger()
@@ -33,9 +51,15 @@ func main() {
 	setGinMode()
 	logDebugMode()
 
+	// Load databases synchronously so the server never accepts requests
+	// before the readers are ready.
+	if err := loadDatabases(); err != nil {
+		logger.FatalLog("initial database load failed: %v", err)
+	}
+
 	server := setupServer()
 
-	go scheduleDatabaseUpdate()
+	go scheduleWeeklyUpdate()
 
 	runServer(server)
 }
@@ -78,14 +102,6 @@ func getPort() string {
 	return strconv.Itoa(*common.Port)
 }
 
-func loadDatabases() {
-	downloadAndSave("GeoIP-City.mmdb", getCityDBURL())
-	downloadAndSave("Geo-ASN.mmdb", getAsnDBURL())
-	downloadAndSave("GeoCN.mmdb", getCnDBURL())
-
-	openDatabases()
-}
-
 func getCityDBURL() string {
 	if config.CityDBRemoteUrl != "" {
 		return config.CityDBRemoteUrl
@@ -107,50 +123,132 @@ func getCnDBURL() string {
 	return cnDBURL
 }
 
-func downloadAndSave(filename, url string) {
-	logger.SysLog(fmt.Sprintf("Downloading %s from %s...", filename, url))
-	resp, err := http.Get(url)
+// loadDatabases prepares the three mmdb files on first start. Existing
+// files that open as valid databases are reused as-is.
+func loadDatabases() error {
+	for _, db := range databases() {
+		if isValidDatabase(db.filename) {
+			continue
+		}
+		logger.SysLog(fmt.Sprintf("Downloading %s from %s...", db.filename, db.url))
+		if err := downloadAndSave(db.filename, db.url); err != nil {
+			return fmt.Errorf("prepare %s: %w", db.filename, err)
+		}
+		logger.SysLog(fmt.Sprintf("Downloaded and saved %s successfully", db.filename))
+	}
+	return openDatabases()
+}
+
+// refreshDatabases re-downloads every database but keeps the previous
+// files on failure, so a broken upstream never takes the service down.
+func refreshDatabases() error {
+	var errs []string
+	updated := false
+	for _, db := range databases() {
+		if err := downloadAndSave(db.filename, db.url); err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		logger.SysLog(fmt.Sprintf("Updated %s successfully", db.filename))
+		updated = true
+	}
+	if !updated {
+		return fmt.Errorf("all database downloads failed: %s", strings.Join(errs, "; "))
+	}
+	if err := openDatabases(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// isValidDatabase reports whether the file exists and opens as a valid
+// mmdb database. Files corrupted by earlier failed downloads (e.g. a
+// saved 404 page) fail this check and get re-downloaded.
+func isValidDatabase(filename string) bool {
+	if _, err := os.Stat(filename); err != nil {
+		return false
+	}
+	r, err := maxminddb.Open(filename)
 	if err != nil {
-		logger.FatalLog("Failed to download %s: %v", filename, err)
+		return false
+	}
+	r.Close()
+	return true
+}
+
+// downloadAndSave fetches url into filename via a temp file and replaces
+// the target only after the payload verifies as a valid mmdb file.
+func downloadAndSave(filename, url string) error {
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", filename, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download %s: unexpected HTTP status %d", filename, resp.StatusCode)
+	}
 
-	out, err := os.Create(filename)
+	tmp := filename + ".tmp"
+	out, err := os.Create(tmp)
 	if err != nil {
-		logger.FatalLog("Failed to create file %s: %v", filename, err)
+		return fmt.Errorf("create %s: %w", tmp, err)
 	}
-	defer out.Close()
-
 	if _, err := io.Copy(out, resp.Body); err != nil {
-		logger.FatalLog("Failed to save file %s: %v", filename, err)
+		out.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("save %s: %w", filename, err)
 	}
-	logger.SysLog(fmt.Sprintf("Downloaded and saved %s successfully", filename))
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("save %s: %w", filename, err)
+	}
+	if r, err := maxminddb.Open(tmp); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("%s is not a valid MaxMind database: %w", filename, err)
+	} else {
+		r.Close()
+	}
+	if err := os.Rename(tmp, filename); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("replace %s: %w", filename, err)
+	}
+	return nil
 }
 
-func openDatabases() {
-	var err error
+// openDatabases swaps all three readers atomically; on any failure the
+// currently serving readers are left untouched.
+func openDatabases() error {
+	city, err := maxminddb.Open("GeoIP-City.mmdb")
+	if err != nil {
+		return fmt.Errorf("open city database: %w", err)
+	}
+	asn, err := maxminddb.Open("Geo-ASN.mmdb")
+	if err != nil {
+		city.Close()
+		return fmt.Errorf("open asn database: %w", err)
+	}
+	cn, err := maxminddb.Open("GeoCN.mmdb")
+	if err != nil {
+		city.Close()
+		asn.Close()
+		return fmt.Errorf("open cn database: %w", err)
+	}
+
 	common.Mu.Lock()
 	defer common.Mu.Unlock()
-
-	common.CityReader, err = maxminddb.Open("GeoIP-City.mmdb")
-	if err != nil {
-		logger.FatalLog("Error opening city database: %v", err)
+	for _, old := range []*maxminddb.Reader{common.CityReader, common.AsnReader, common.CnReader} {
+		if old != nil {
+			old.Close()
+		}
 	}
-
-	common.AsnReader, err = maxminddb.Open("Geo-ASN.mmdb")
-	if err != nil {
-		logger.FatalLog("Error opening ASN database: %v", err)
-	}
-
-	common.CnReader, err = maxminddb.Open("GeoCN.mmdb")
-	if err != nil {
-		logger.FatalLog("Error opening CN database: %v", err)
-	}
+	common.CityReader, common.AsnReader, common.CnReader = city, asn, cn
+	return nil
 }
 
-func scheduleDatabaseUpdate() {
-	loadDatabases()
-
+func scheduleWeeklyUpdate() {
 	for {
 		nextUpdateTime := getNextSundayLastSecond()
 		durationUntilUpdate := time.Until(nextUpdateTime)
@@ -160,7 +258,9 @@ func scheduleDatabaseUpdate() {
 		<-timer.C
 
 		logger.SysLog("Updating databases...")
-		loadDatabases()
+		if err := refreshDatabases(); err != nil {
+			logger.SysLog(fmt.Sprintf("Database update failed, keeping old databases: %v", err))
+		}
 	}
 }
 

@@ -15,7 +15,7 @@ _基于**MaxMind**的GeoIP库的IP信息查询服务_
 ## 功能
 
 - [x] 获取本机或指定IP所在的**IP段**、**ASN**、**城市**、**经度**、**纬度**、**子区域**、**省市区**、**注册国家**。
-- [x] 定期(每周)更新GeoLite2库。
+- [x] 定期(每周)更新GeoLite2/GeoCN库(本地优先,更新失败自动沿用旧库)。
 - [x] 支持自定义City.mmdb远程地址。
 
 ### 接口文档:
@@ -55,6 +55,11 @@ services:
     environment:
       - API_SECRET=123456  # [可选]修改此行为请求头校验的值（前后端统一）
       - TZ=Asia/Shanghai
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"   # 单个日志文件上限
+        max-file: "3"     # 最多保留份数,合计约 30MB
 ```
 
 ### 基于 Docker 进行部署
@@ -65,6 +70,7 @@ docker run --name go-geoip -d --restart always \
 -v $(pwd)/data:/app/go-geoip/data \
 -e API_SECRET="123456" \
 -e TZ=Asia/Shanghai \
+--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
 deanxv/go-geoip
 ```
 
@@ -127,3 +133,7 @@ Render 可以直接部署 docker 镜像,不需要 fork 仓库：[Render](https:/
 2. `CITY_DB_REMOTE_URL=https://xxx.com/GeoIP2-City.mmdb`  [可选]city.mmdb远程地址
 3. `ASN_DB_REMOTE_URL=https://xxx.com/GeoLite2-ASN.mmdb`  [可选]ASN.mmdb远程地址
 4. `CN_DB_REMOTE_URL=https://xxx.com/GeoCN.mmdb`  [可选]CN.mmdb远程地址
+
+### 数据库更新策略
+
+三个 mmdb 数据库优先使用本地已有文件,仅首次启动(或本地文件损坏)时下载;之后每周日尝试更新,下载并校验通过后原子替换,失败则继续使用本地旧库,不影响正在提供的服务。GeoCN 默认从其 [GitHub 最新 release](https://github.com/ljxi/GeoCN/releases/latest/download/GeoCN.mmdb) 获取。

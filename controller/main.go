@@ -70,6 +70,10 @@ func getIpInfo(ip string) (*model.IPInfoResponse, error) {
 	common.Mu.Lock()
 	defer common.Mu.Unlock()
 
+	if common.CityReader == nil || common.AsnReader == nil || common.CnReader == nil {
+		return nil, fmt.Errorf("databases are still loading")
+	}
+
 	if err := populateASInfo(parsedIP, info); err != nil {
 		return nil, err
 	}
@@ -119,19 +123,14 @@ func populateCnInfo(ip string, info *model.IPInfoResponse) {
 	var geoCN model.GeoCN
 	if network, ok, err := common.CnReader.LookupNetwork(parsedIP, &geoCN); err == nil && ok {
 		info.Addr = network.String()
-		if strings.HasSuffix(geoCN.Province, "市") {
-			info.Province = geoCN.Province
-			info.City = geoCN.Province
-			info.District = geoCN.City
-		} else {
-			info.Province = geoCN.Province
-			info.City = geoCN.City
-			info.District = geoCN.Districts
+		if province, city, district := model.ResolveDivision(geoCN.DivisionCode); province != "" {
+			info.Province, info.City, info.District = province, city, district
 		}
-
-		info.AS = geoCN.ISP
-		if geoCN.Net != "" {
-			info.AS += " (" + geoCN.Net + ")"
+		if geoCN.ISP != "" {
+			info.AS = geoCN.ISP
+			if geoCN.Type != "" {
+				info.AS += " (" + geoCN.Type + ")"
+			}
 		}
 	}
 }
