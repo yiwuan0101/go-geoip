@@ -9,6 +9,9 @@ _基于**MaxMind**的GeoIP库的IP信息查询服务_
 [✨演示接口](https://api8.iplookup.pro/ip)
 
 [✨演示接口文档](https://api8.iplookup.pro/swagger/index.html)
+
+> 本仓库是 [deanxv/go-geoip](https://github.com/deanxv/go-geoip) 的维护 fork:修复了 GeoCN 数据源 404 导致启动崩溃的问题,并支持自定义 ASN/CN 数据库下载地址。
+> 镜像发布于 `ghcr.io/yiwuan0101/go-geoip`,推 tag 自动构建。
 </div>
 
 
@@ -16,7 +19,7 @@ _基于**MaxMind**的GeoIP库的IP信息查询服务_
 
 - [x] 获取本机或指定IP所在的**IP段**、**ASN**、**城市**、**经度**、**纬度**、**子区域**、**省市区**、**注册国家**。
 - [x] 定期(每周)更新GeoLite2/GeoCN库(本地优先,更新失败自动沿用旧库)。
-- [x] 支持自定义City.mmdb远程地址。
+- [x] 支持自定义City/ASN/CN.mmdb远程地址。
 
 ### 接口文档:
 
@@ -41,11 +44,9 @@ docker-compose pull && docker-compose up -d
 #### docker-compose.yml
 
 ```docker
-version: '3.4'
-
 services:
   go-geoip:
-    image: deanxv/go-geoip:latest
+    image: ghcr.io/yiwuan0101/go-geoip:latest
     container_name: go-geoip
     restart: always
     ports:
@@ -71,12 +72,12 @@ docker run --name go-geoip -d --restart always \
 -e API_SECRET="123456" \
 -e TZ=Asia/Shanghai \
 --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
-deanxv/go-geoip
+ghcr.io/yiwuan0101/go-geoip:latest
 ```
 
 其中`API_SECRET`修改为自己的。
 
-如果上面的镜像无法拉取,可以尝试使用 GitHub 的 Docker 镜像,将上面的`deanxv/go-geoip`替换为`ghcr.io/deanxv/go-geoip`即可。
+镜像托管在 GitHub Container Registry,拉取缓慢可自行配置镜像加速。
 
 ### 部署到第三方平台
 
