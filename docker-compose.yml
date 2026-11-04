@@ -1,14 +1,12 @@
-version: '3.4'
-
 services:
-  coze-discord-proxy:
-    image: deanxv/go-geoip:latest
+  go-geoip:
+    image: ghcr.io/yiwuan0101/go-geoip:latest  # 自己 fork 构建的镜像,由 GitHub Actions 自动发布到 ghcr.io
     container_name: go-geoip
     restart: always
     ports:
       - "7099:7099"
     volumes:
-      - ./data:/app/go-geoip/data
+      - ./data:/app/go-geoip/data  # 数据库存放目录,持久化后重启不必重新下载
     environment:
       - API_SECRET=123456  # [可选]修改此行为请求头校验的值（前后端统一）
       - TZ=Asia/Shanghai

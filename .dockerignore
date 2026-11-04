@@ -1,0 +1,16 @@
+# 版本控制 / IDE
+.git
+.github
+.idea
+
+# 数据库文件(运行时自动下载到容器内 /app/go-geoip/data,构建不需要)
+*.mmdb
+data
+
+# 注意: docs/ 是 swaggo 生成的 Go 包,构建必需,不能忽略
+
+# 文档与部署文件,不参与构建
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

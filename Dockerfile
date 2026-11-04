@@ -1,35 +1,49 @@
-# 使用 Golang 镜像作为构建阶段
-FROM golang AS builder
+# ---------- 构建阶段 ----------
+# 基础镜像锁定版本(go.mod 要求 Go >= 1.23.2),可用 --build-arg 覆盖
+ARG GO_VERSION=1.23
+ARG ALPINE_VERSION=3.21
+FROM golang:${GO_VERSION}-alpine AS builder
 
-# 设置环境变量
+# 依赖代理可在构建时覆盖,国内网络示例:
+#   docker build --build-arg GOPROXY=https://goproxy.cn,direct .
+ARG GOPROXY=""
 ENV GO111MODULE=on \
     CGO_ENABLED=0 \
-    GOOS=linux
+    GOOS=linux \
+    GOPROXY=${GOPROXY:-https://proxy.golang.org,direct}
 
-# 设置工作目录
+# 注入版本号(与 CI 发行版保持一致),示例:
+#   docker build --build-arg VERSION=$(git describe --tags --always) .
+ARG VERSION=dev
+
 WORKDIR /build
 
-# 复制 go.mod 和 go.sum 文件,先下载依赖
+# 先复制依赖清单,利用层缓存加速重复构建
 COPY go.mod go.sum ./
-#ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 
-# 复制整个项目并构建可执行文件
 COPY . .
-RUN go build -o /go-geoip
+RUN go build -trimpath -ldflags "-s -w -X 'go-geoip/common.Version=${VERSION}'" -o /go-geoip
 
-# 使用 Alpine 镜像作为最终镜像
-FROM alpine
+# ---------- 运行阶段 ----------
+FROM alpine:${ALPINE_VERSION}
 
-# 安装基本的运行时依赖
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="go-geoip" \
+      org.opencontainers.image.version="${VERSION}"
+
+# ca-certificates: HTTPS 下载数据库需要;tzdata: 时区
 RUN apk --no-cache add ca-certificates tzdata
 
-# 从构建阶段复制可执行文件
-COPY --from=builder /go-geoip .
+COPY --from=builder /go-geoip /go-geoip
 
-# 暴露端口
-EXPOSE 7099
-# 工作目录
+# 数据库下载/存放目录(建议挂载卷持久化)
 WORKDIR /app/go-geoip/data
-# 设置入口命令
+
+EXPOSE 7099
+
+# /ip 带鉴权,取 API_SECRET 第一段作为校验值;未设置 API_SECRET 时鉴权放行,同样可用
+HEALTHCHECK --interval=30s --timeout=5s --start-period=2m --retries=3 \
+    CMD wget -q -O /dev/null --header "Authorization: Bearer ${API_SECRET%%,*}" "http://127.0.0.1:${PORT:-7099}/ip" || exit 1
+
 ENTRYPOINT ["/go-geoip"]
